@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 import jax.lax as jl
-from jax.tree_util import Partial
 from Bio import SeqIO
 
 def read_seqs(path):
@@ -9,14 +8,17 @@ def read_seqs(path):
         records = list(SeqIO.parse(f, "fasta"))
 
     seqs = []
+    lens = []
     for rec in records:
         seq = []
         for c in rec.seq:
             idx = ord(c) - ord('A')
             seq.append(jnp.zeros((26,)).at[idx].set(1.0))
         seqs.append(jnp.vstack(seq))
+        lens.append(len(rec.seq))
+    max_len = max(lens)
 
-    return jnp.vstack(seqs)
+    return jnp.stack([jl.pad(seq, -1., [(0, max_len - seq.shape[0], 0), (0,0,0)]) for seq in seqs], 0), lens
 
 def _front_cells(k, dims):
     if 0 <= k < dims[0]:
@@ -33,9 +35,6 @@ def _front_cells(k, dims):
         ], 1)
 
     raise ValueError(f"requested front {k} out of bounds")
-
-def calculate_scores(seq_one, seq_two, scores):
-    return jnp.sum(seq_one[:, None, None, :] * seq_two[None, :, :, None] * scores[None, None, :, :], axis=(2, 3))
 
 def _get_cell_dep(cell, s):
     cell_upleft = cell.at[:].add(-1)
@@ -63,50 +62,46 @@ def _get_cell_dep(cell, s):
     return jnp.stack([dep_upleft, dep_up, dep_left], 0)
 _get_cells_dep = jax.vmap(_get_cell_dep, (0, None), 0)
 
-def _resolve_cell_scoring(dep, profs, score_mat, gap):
-    score = jnp.sum(jnp.outer(profs[0, :], profs[1, :]) * score_mat)
-    out = jnp.empty((3,)).at[:].set([dep[0] + score, dep[1] - gap, dep[2] - gap])
-
-    return jl.cond(jnp.max(out) == -jnp.inf, (lambda x: x.at[:].set(0.)), (lambda x: x), operand=out)
-_resolve_cells_scoring = jax.vmap(_resolve_cell_scoring, (0, 0, None, None))
-
-def _resolve_cell(dep, cell, scores, gap):
+def _resolve_cell(dep, cell, profs, score_mat, gap):
     score = jl.cond(
         (cell[0] > 0) & (cell[1] > 0),
-        lambda scores: scores[cell[0]-1, cell[1]-1],
-        lambda scores: -jnp.inf,
-        scores
+        lambda profs, score_mat, cell: jnp.sum(jnp.outer(profs[0, cell[0]-1, :], profs[1, cell[1]-1, :]) * score_mat),
+        lambda profs, score_mat, cell: -jnp.inf,
+        profs,
+        score_mat,
+        cell,
     )
     out = jnp.empty((3,)).at[:].set([dep[0] + score, dep[1] - gap, dep[2] - gap])
 
     return jl.cond(jnp.max(out) == -jnp.inf, (lambda x: x.at[:].set(0.)), (lambda x: x), operand=out)
-_resolve_cells = jax.vmap(_resolve_cell, (0, 0, None, None), 0)
+_resolve_cells = jax.vmap(_resolve_cell, (0, 0, None, None, None), 0)
 
 @jax.jit
-def _resolve_cells_scatter(scores, gap, cells, s):
+def _resolve_cells_scatter(profs, score_mat, gap, cells, s):
+    print("Compiling")
     deps = _get_cells_dep(cells, s)
-    outputs = _resolve_cells(deps, cells, scores, gap)
+    outputs = _resolve_cells(deps, cells, profs, score_mat, gap)
 
     return s.at[cells[:, 0], cells[:, 1]].set(outputs)
 
-def needleman_wunsch(profs, gap):
-    height = scored.shape[0] + 1
-    width = scored.shape[1] + 1
+def needleman_wunsch(lens, profs, score_mat, gap):
+    height = lens[0] + 1
+    width = lens[1] + 1
     dims = (height, width)
 
     s = jnp.full((height, width, 3), jnp.nan)
 
     for k in range(dims[0] + dims[1] - 1):
         cells = _front_cells(k, dims)
-        s = _resolve_cells_scatter(scored, gap, cells, s)
+        pad_cells = jl.pad(cells, 0, [(0, 16 - cells.shape[0], 0), (0, 0, 0)])
+        s = _resolve_cells_scatter(profs, score_mat, gap, pad_cells, s)
+
     print(jnp.max(s, 2))
 
 def main():
-    profs = read_seqs("./data/input.fasta")
-    print(profs)
-
-    # needleman_wunsch(scored, 1)
-
+    profs, lens = read_seqs("./data/input.fasta")
+    score_mat = jnp.eye(26, 26, dtype=jnp.float32)
+    needleman_wunsch(lens, profs, score_mat, 1)
 
 if __name__ == "__main__":
     main()
