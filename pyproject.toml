@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "jaxalignment"
+version = "0.1.0"
+description = ""
+authors = ["Maurits Dijkstra <mauritsdijkstra@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+jax = {extras = ["cpu"], version = "^0.4.1"}
+biopython = "^1.80"
+
+[tool.poetry.group.dev.dependencies]
+jupyterlab = "^3.5.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
